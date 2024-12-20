@@ -1,0 +1,67 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+struct pdu {
+    char type;
+    char data[100];
+};
+
+int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <server_address> <server_port> <filename>\n", argv[0]);
+        exit(1);
+    }
+
+    int sockfd;
+    struct sockaddr_in server_addr;
+    char buffer[1024];
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (sockfd < 0) {
+        perror("Error in socket");
+        exit(1);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(atoi(argv[2));
+    inet_pton(AF_INET, argv[1], &server_addr.sin_addr);
+
+    struct pdu spdu;
+    spdu.type = 'C'; // Set the type to FILENAME PDU
+    strcpy(spdu.data, argv[3]); // Set the filename
+
+    sendto(sockfd, &spdu, strlen(spdu.data) + 2, 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+
+    FILE *file = fopen(argv[3], "wb"); // Open the file for writing in binary mode
+
+    if (file == NULL) {
+        perror("Error opening the file for writing");
+        close(sockfd);
+        exit(1);
+    }
+
+    while (1) {
+        recvfrom(sockfd, buffer, sizeof(buffer), 0, NULL, NULL);
+        struct pdu *pdu = (struct pdu *)buffer;
+
+        if (pdu->type == 'D') {
+            // Handle DATA PDU (Received file data)
+            fwrite(pdu->data, 1, strlen(pdu->data), file);
+        } else if (pdu->type == 'F') {
+            // Handle FINAL PDU (End of file transfer)
+            break;
+        } else if (pdu->type == 'E') {
+            // Handle ERROR PDU (Received an error message)
+            fprintf(stderr, "Error: %s\n", pdu->data);
+            break;
+        }
+    }
+
+    fclose(file);
+    close(sockfd);
+    return 0;
+}

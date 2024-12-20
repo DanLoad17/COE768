@@ -1,0 +1,106 @@
+/* Updated peer.c with modifications in handle_client function */
+
+#include <sys/types.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <netdb.h>
+#include <dirent.h>
+
+#define BUFSIZE 64
+#define PACKETSIZE 101
+#define DATASIZE 100
+#define NAMESIZE 10
+
+struct pdu {
+    char type;
+    char peerName[NAMESIZE];
+    char contentName[NAMESIZE];
+    struct sockaddr_in addr;
+};
+
+struct standardPDU {
+    char type;
+    char data[DATASIZE];
+};
+
+void handle_user(int s, struct sockaddr_in reg_addr, char *peerName, int *registered);
+void handle_client(int sd);
+void sendFile(int s, FILE *p, int fileByteSize);
+int getContentServer(int s, char peerName[], char downloadName[], struct sockaddr_in addr);
+int download_request(int sd, char downloadName[]);
+int receiveFile(int sd, char fileName[]);
+int getLocalFiles(void);
+int setupPDU(struct pdu *spdu, char type, char peerName[], char contentName[]);
+
+int main(int argc, char **argv)
+{
+    // ... (unchanged code)
+
+    while (1) {
+        if (ret_sel = select(FD_SETSIZE, &rfds, NULL, NULL, NULL) < 0) {
+            printf("Select() Error\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (FD_ISSET(sd, &rfds)) { // Check server TCP socket
+            client_len = sizeof(client);
+            new_sd = accept(sd, (struct sockaddr *)&client, &client_len);
+            if (new_sd >= 0) { // New Accepted TCP socket
+                handle_client(new_sd); // Handle download request
+                close(new_sd);
+                printf("Enter Command:\n");
+            }
+        }
+        if (FD_ISSET(fileno(stdin), &rfds)) {
+            handle_user(s, reg_addr, peerName, regPtr); // Handle user interaction
+            printf("Enter Command:\n");
+        }
+    }
+
+    close(sd);
+    exit(EXIT_SUCCESS);
+}
+
+/* Updated handle_client function */
+void handle_client(int sd)
+{
+    struct pdu rpdu;
+    struct standardPDU spdu;
+    char fileName[NAMESIZE];
+    char fileNotFound[] = "FILE NOT FOUND\n";
+    int n;
+    FILE *file;
+
+    if ((n = recv(sd, &rpdu, PACKETSIZE, 0)) == -1) {
+        fprintf(stderr, "Content Server recv: %s (%d)\n", strerror(errno), errno);
+        exit(EXIT_FAILURE);
+    }
+    if (rpdu.type == 'D') {
+        memcpy(fileName, rpdu.contentName, NAMESIZE);
+        char filePath[NAMESIZE + 3]; // Add current directory and '\0' to file name
+        snprintf(filePath, sizeof(filePath), "./%s", fileName);
+
+        file = fopen(filePath, "rb"); // Open in binary mode
+        if (file == NULL) { // File does not exist
+            spdu.type = 'E';
+            memcpy(spdu.data, fileNotFound, sizeof(fileNotFound));
+            write(sd, &spdu, sizeof(spdu));
+        } else {
+            printf("Sending file...\n");
+            struct stat fileInfo;
+            stat(filePath, &fileInfo);
+            sendFile(sd, file, fileInfo.st_size);
+            printf("Successfully sent file\n\n");
+            fclose(file);
+        }
+    }
+    // ... (rest of the unchanged code)
+}

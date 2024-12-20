@@ -1,0 +1,60 @@
+/* Updated server.c with modifications for better readability */
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <string.h>
+#include <netdb.h>
+#include <stdio.h>
+#include <time.h>
+#include <sys/stat.h>
+
+#define PACKETSIZE 101
+#define DATASIZE 100
+#define NAMESIZE 10
+#define MAXCONTENTPORTS 5
+#define MAXPEERS 5
+#define MAXCONTENTLEN 50
+
+struct content {
+    char name[NAMESIZE];
+    char user[NAMESIZE];
+    int port;
+    struct sockaddr_in addr;
+};
+
+struct pdu {
+    char type;
+    char data[DATASIZE];
+};
+
+struct registerPDU {
+    char type;
+    char peerName[NAMESIZE];
+    char contentName[NAMESIZE];
+    struct sockaddr_in addr;
+};
+
+int getUserIndex(struct content contents[MAXPEERS], char name[]);
+int getContentIndex(struct content contents[MAXPEERS], char name[], int startIndex);
+void getContent(struct content contents[MAXPEERS], int length, char *msg);
+void removeContent(struct content contents[MAXPEERS], int length, int index);
+
+int main(int argc, char *argv[])
+{
+    // ... (unchanged code)
+
+    while (1) {
+        if ((n = recvfrom(s, &rpdu, sizeof(rpdu), 0, (struct sockaddr *)&fsin, &alen)) < 0)
+            fprintf(stderr, "recvfrom error\n");
+
+        switch (rpdu.type) {
+            // ... (unchanged code)
+        }
+
+        bzero(spdu.data, DATASIZE);
+    }
+
+    // ... (unchanged code)
+}

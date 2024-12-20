@@ -1,0 +1,528 @@
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define BUFSIZE 64
+#define BUFLEN 4096
+#define MAX_STRING_LENGTH 10
+#define MSG "Any Message \n"
+
+void reaper(int);
+void getPeerName(void);
+int registerFile(int s, char *fileNameTemp);
+void downloadRequestListener(int sd, char *downloadFileName);
+int processDownloadRequest(int sd, char *downloadFileName);
+void listContent(int s);
+int deregisterFile(int s);
+int exitPeer(int s);
+int downloadContent(int s);
+
+struct pdu {
+    char type;
+    char data[100];
+};
+
+struct dpdu {
+    char type;
+    char data[1000];
+};
+
+char peerName[MAX_STRING_LENGTH];
+char fileName[MAX_STRING_LENGTH];
+char peerAddress[80];
+int i, j;
+
+int main(int argc, char **argv) {
+    char *host = "localhost";
+    int port = 3000;
+    char now[100];          /* 32-bit integer to hold time	*/
+    struct hostent *phe;    /* pointer to host information entry	*/
+    struct sockaddr_in sin; /* an Internet endpoint address		*/
+    int s, n, type, x;      /* socket descriptor and socket type	*/
+    char *bp;
+    char rbuf[BUFLEN];
+    char userInput;
+
+    switch (argc) {
+        case 1:
+            break;
+        case 2:
+            host = argv[1];
+        case 3:
+            host = argv[1];
+            port = atoi(argv[2]);
+            break;
+        case 4:
+            host = argv[1];
+            port = atoi(argv[2]);
+            strcpy(peerAddress, argv[3]);
+            break;
+        default:
+            fprintf(stderr, "usage: UDPtime [host [port]]\n");
+            exit(1);
+    }
+
+    memset(&sin, 0, sizeof(sin)); //This line sets all bytes in the sin structure to zero. It initializes the structure to avoid any potential garbage values.
+    sin.sin_family = AF_INET; //This line sets the address family for the socket to IPv4.
+    sin.sin_port = htons(port); //This line sets the port number for the socket. The htons function converts the port number from host byte order to network byte order.
+
+    /* Map host name to IP address, allowing for dotted decimal */
+    if (phe = gethostbyname(host)) { //This function attempts to retrieve host information (including IP address) based on the provided host name (host). If successful, it returns a pointer to a hostent structure.
+        memcpy(&sin.sin_addr, phe->h_addr, phe->h_length); //If gethostbyname succeeds, this line copies the IP address from the hostent structure (phe) to the sin.sin_addr field of the sin structure.
+    } else if ((sin.sin_addr.s_addr = inet_addr(host)) == INADDR_NONE) // If gethostbyname fails, this line attempts to interpret the host name as a dotted-decimal IPv4 address using inet_addr. If it fails (INADDR_NONE is returned), an error message is printed.
+        fprintf(stderr, "Can't get host entry \n");
+
+    /* Allocate a socket */
+    s = socket(AF_INET, SOCK_DGRAM, 0); //This line creates a UDP (SOCK_DGRAM) socket using the socket system call. The socket file descriptor is stored in the variable s.
+    if (s < 0) //This checks if the socket creation was successful. If the file descriptor is less than 0, it prints an error message.
+        fprintf(stderr, "Can't create socket \n");
+
+    /* Connect the socket */
+    if (connect(s, (struct sockaddr *)&sin, sizeof(sin)) < 0) //This line establishes a connection on the UDP socket to the specified address (sin) using the connect system call.
+        fprintf(stderr, "Can't connect to %s %s \n", host, "Time"); //This checks if the connection was successful. If it fails (returns a value less than 0), it prints an error message.
+ //In summary, these portions of code initialize a UDP socket, set up the socket address structure (sin), and establish a connection to a specified host and port. If successful, the UDP socket is ready for communication with the specified host.
+   
+ /* Ask for peer name */
+    getPeerName();
+
+    while (1) {
+        printf("\nPlease choose one of the following: \n");
+        printf("R - Register file \n");
+        printf("T - Unregister file \n");
+        printf("C - List all downloadable files \n");
+        printf("D - Download file \n");
+        printf("Q - Quit \n");
+
+        printf("User input ===> ");
+        scanf("%c%*c", &userInput); //This line reads a single character input from the user (%c), and the %*c is used to consume the newline character left in the input buffer after pressing Enter.
+
+        switch (userInput) {
+            case 'R':
+                printf("\n\nEnter the file name below: \n");
+                i = read(0, fileName, 10);
+                fileName[i - 1] = '\0';
+
+                registerFile(s, fileName);
+                break;
+            case 'T':
+                deregisterFile(s);
+                break;
+            case 'C':
+                listContent(s);
+                break;
+            case 'D':
+                downloadContent(s);
+                break;
+            case 'Q':
+                if (exitPeer(s) == 0) return 0;
+                break;
+            default:
+                fprintf(stderr, "Error: Invalid input, please try again! \n");
+
+                printf("\n\n");
+        }
+    }
+
+    /*Write filename to server server*/
+    struct pdu cpdu;
+    cpdu.type = 'C'; //This code creates a struct pdu named cpdu and sets its type to 'C', indicating a content request or transmission.
+    printf("Transmit File Name: \n");
+    i = read(0, cpdu.data, 100); //The user is prompted to enter the file name, which is read into cpdu.data with a maximum length of 100 characters.
+    cpdu.data[i - 1] = '\0'; //The last character of cpdu.data is set to '\0' to terminate the string properly.
+
+    (void)write(s, &cpdu, i + 1); //The write system call is then used to send the cpdu structure to the server.
+
+    /* Read download from server*/
+    // FILE *fptr = fopen(cpdu.data, "w"); 
+
+    struct pdu buf;
+    buf.type = 'C'; //A new struct pdu named buf is created and initialized with type 'C'. This structure is used to receive data from the server.
+
+    FILE *fptr = fopen(cpdu.data, "w"); //A file pointer (fptr) is opened to create a new file with the same name as the file transmitted to the server (cpdu.data). The file is opened in write mode ('w').
+
+    while (buf.type != 'F' && (n = read(s, &buf, sizeof(buf)))) { //A loop is initiated to read data from the server until the server signals the end of the file ('F').
+        if (buf.type == 'E') {
+            fprintf(stderr, "Error finding the file!!!\n"); //Inside the loop, if the server signals an error ('E'), an error message is printed, the file is closed, and the program exits with an error code
+            fclose(fptr);
+            exit(1);
+        }
+
+        x = 0;
+        while (x < 100 && buf.data[x] != EOF) {
+            fputc(buf.data[x], fptr); //The received data is then written to the local file using the fputc function. The loop continues until the end of the data or until 100 characters are read.
+            x++;
+        }
+    }
+
+    fclose(fptr); //After the loop, the local file is closed using fclose.
+    exit(0);
+}
+
+// Gets peer name
+void getPeerName(void) { //The getPeerName function is responsible for obtaining and storing the peer name entered by the user.
+    int p1 = 0; //p1 is an integer variable initialized to 0. It will be used to store the length of the input peer name.
+    memset(peerName, 0, sizeof(peerName)); //This line uses memset to set all bytes in the peerName array to zero. It ensures that the array starts with a clean slate, avoiding any potential garbage values.
+    printf("Please enter your peer name: \n"); //The user is prompted to enter their peer name.
+    p1 = read(0, peerName, MAX_STRING_LENGTH); //The read function is used to read input from the standard input (file descriptor 0) into the peerName array. It reads up to MAX_STRING_LENGTH characters.
+    peerName[p1 - 1] = '\0'; //After reading the input, the last character of the peerName array is set to '\0' to properly terminate the string.
+    printf("\n\n");
+}
+
+// Register a file
+int registerFile(int s, char *fileNameTemp) {
+    struct pdu register_pdu;
+    struct pdu receive_pdu;
+    struct sockaddr_in reg_addr;
+    int p_sock, alen;
+    int k = 0;
+
+    struct sockaddr_in clientAddr;
+    int clientLen, d_sock;
+
+    char downloadFileName[MAX_STRING_LENGTH];
+    strcpy(downloadFileName, fileNameTemp); //The fileNameTemp parameter is copied into a local variable downloadFileName. This local copy is used to avoid modifying the original file name.
+
+    printf("fileNameTemp: %s\n", fileNameTemp); //The original file name is printed for debugging or informational purposes.
+
+    // opens port for TCP connections
+    p_sock = socket(AF_INET, SOCK_STREAM, 0); //A TCP socket (p_sock) is created using the socket function. This socket will be used for handling TCP connections.
+
+    //??
+    bzero((char *)&reg_addr, sizeof(struct sockaddr_in)); //The bzero function is used to zero out the memory of the reg_addr structure, initializing it before use.
+
+    reg_addr.sin_family = AF_INET;
+    reg_addr.sin_port = htons(0);
+    reg_addr.sin_addr.s_addr = htonl(INADDR_ANY); //The reg_addr structure is configured with the address family (IPv4), port (set to 0 for dynamic allocation), and the IP address set to any available local address.
+    bind(p_sock, (struct sockaddr *)&reg_addr, sizeof(reg_addr)); //The socket is bound to the local address and port specified in the reg_addr structure.
+
+    alen = sizeof(struct sockaddr_in);
+    getsockname(p_sock, (struct sockaddr *)&reg_addr, &alen); //getsockname retrieves the locally bound address and port for the socket and updates the reg_addr structure.
+//This was setting up a socket to listen for incoming TCP connections. The dynamically assigned port (port 0) is retrieved using getsockname after binding the socket.
+
+    // create the PDU sent to the index server to register file
+    register_pdu.type = 'R'; //The type of the registration protocol data unit (register_pdu) is set to 'R'.
+    char portCharArr[MAX_STRING_LENGTH];
+    snprintf(portCharArr, sizeof(portCharArr), "%d", ntohs(reg_addr.sin_port)); //The portCharArr is a character array used to temporarily store the string representation of the local port number (reg_addr.sin_port).
+
+    for (j = 0; j < MAX_STRING_LENGTH; j++) { //A loop is used to populate the data field of register_pdu with peer information, download file name, peer address, and the string representation of the port.
+        register_pdu.data[j] = peerName[j];
+        register_pdu.data[j + 10] = downloadFileName[j];
+        register_pdu.data[j + 20] = peerAddress[j];
+        register_pdu.data[j + 30] = portCharArr[j];
+    }
+
+    printf("address: %s, port: %s\n", peerAddress, portCharArr); //The local peer address and port information are printed for debugging or informational purposes.
+
+    receive_pdu.type = NULL;
+    k = 0;
+    while (receive_pdu.type != 'A' && (write(s, &register_pdu, 101) > 0) && (k = read(s, &receive_pdu, sizeof(receive_pdu)))) { //write is used to send the registration PDU (register_pdu) to the server. The size specified (101) assumes a fixed-size PDU.
+        if (receive_pdu.type == 'E') { // A loop is initiated to wait for a reply from the server. The loop continues until the server acknowledges ('A') or an error ('E') is received.
+            printf("Error, peer name is already taken!\n");
+            getPeerName(); //If the server indicates that the peer name is already taken, an error message is printed, and getPeerName is called again to get a new peer name. The registration PDU is updated with the new peer name.
+
+            for (j = 0; j < MAX_STRING_LENGTH; j++) {
+                register_pdu.data[j] = peerName[j];
+            }
+        } else {
+            break;
+        }
+
+        // wait for reply
+        printf("File sent with new name: %s\n", peerName); 
+    }
+//This code segment essentially registers a file with the server by sending a registration PDU containing peer information. It waits for a response from the server and handles cases where the peer name is already taken. The process repeats until a successful registration or a new unique peer name is provided.
+
+
+    /* queue up to 5 connect requests  */ This code segment sets up a listening socket for incoming download requests on a specified port, forks a child process to handle those requests, and closes the socket in the parent process.
+    listen(p_sock, 5); //The listen function is used to mark the socket (p_sock) as a passive socket, capable of accepting incoming connection requests. The second argument (5) specifies the maximum length to which the queue of pending connections may grow.
+    (void)signal(SIGCHLD, reaper); //The signal function is used to set up a signal handler for the SIGCHLD signal. The reaper function is designated as the signal handler. This handler is responsible for reaping (collecting the exit status) of terminated child processes to avoid zombie processes.
+
+    // forks to child and parent
+    switch (fork()) {
+        case 0: /* child */
+            downloadRequestListener(p_sock, downloadFileName); //In the child process (case 0), the downloadRequestListener function is called, passing the listening socket (p_sock) and the name of the download file (downloadFileName) as arguments. The child process then exits using return.
+            return;
+        default: /* parent */
+            (void)close(p_sock); //In the parent process (default), the listening socket is closed using close(p_sock). This step is important because the parent is not responsible for handling incoming download requests; that task is delegated to the child process.
+            return;
+        case -1: //If the fork operation encounters an error (case -1), an error message is printed.
+            fprintf(stderr, "Error forking child process when registering!\n");
+    }
+}
+
+// listens to download requests for that specific file
+void downloadRequestListener(int sd, char *downloadFileName) { //This function, downloadRequestListener, is designed to handle incoming download requests in a concurrent manner. 
+    struct sockaddr_in clientAddr;
+    int clientLen, new_sd;
+
+    struct dpdu send_pdu, recv_pdu;
+    FILE *fp;
+
+    while (1) { //The function enters an infinite loop to continuously handle incoming download requests.
+        clientLen = sizeof(clientAddr);
+        new_sd = accept(sd, (struct sockaddr *)&clientAddr, &clientAddr); //The accept function is used to accept an incoming connection on the specified socket (sd), and information about the client is stored in the clientAddr structure.
+
+        if (new_sd < 0) {
+            fprintf(stderr, "Can't accept client \n"); //If the accept operation fails (returns a negative value), an error message is printed, and the program exits.
+            exit(1);
+        }
+
+        switch (fork()) {
+            case 0: /* child */
+                (void)close(sd);
+                exit(processDownloadRequest(new_sd, downloadFileName)); //In the child process (case 0), the listening socket (sd) is closed, and the processDownloadRequest function is called, passing the newly accepted socket (new_sd) and the name of the download file (downloadFileName). The child process then exits.
+            default: /* parent */
+                (void)close(new_sd); //In the parent process (default), the newly accepted socket (new_sd) is closed, as the parent is responsible for handling the next incoming connection.
+                break;
+            case -1:
+                fprintf(stderr, "fork: error\n");
+        }
+    } //In summary, this function creates a child process to handle each incoming download request, allowing the program to handle multiple requests concurrently. The child process executes the processDownloadRequest function, which is responsible for managing the actual download process. The parent process continues to handle incoming connections in the loop. This design enables the server to handle multiple download requests simultaneously.
+}
+
+// process the download request
+int processDownloadRequest(int sd, char *downloadFileName) {
+    struct dpdu send_pdu, recv_pdu;
+    int k;
+    int breakWhile = 1;
+    FILE *fp;
+
+    fp = fopen(downloadFileName, "r"); //Opens the specified file (downloadFileName) in read-only mode ("r").
+    if (fp == NULL) {
+        fprintf(stderr, "error opening file\n"); //If the file opening operation fails (returns NULL), an error message is printed, and the function returns with an error code (1).
+        return 1;
+    }
+
+    while (breakWhile) { //Enters a loop (while (breakWhile)) to read the content of the file and send it to the client.
+        send_pdu.type = 'C';
+
+        for (k = 0; k < 1000; k++) { //Each iteration of the loop sends a dpdu structure (send_pdu) to the client. The type of the pdu is set to 'C' to indicate content.
+            send_pdu.data[k] = fgetc(fp); //The content of the file is read into the data field of the pdu using fgetc(fp).
+            if (send_pdu.data[k] == EOF) {
+                breakWhile = 0; //If the end of the file (EOF) is reached, the loop is terminated (breakWhile = 0; break;).
+                break;
+            }
+        }
+
+        write(sd, &send_pdu, sizeof(send_pdu)); //The constructed pdu is sent to the client using the write function.
+    }
+
+    return 0;
+}
+
+void listContent(int s) { //This function, listContent, is responsible for requesting and displaying a list of downloadable content from the server. 
+    struct pdu list_pdu;
+    struct pdu receive_pdu;
+    int k = 0;
+    int l = 1;
+    int x = 0;
+
+    // create the PDU sent to the index server to register file
+    list_pdu.type = 'O'; //Constructs a pdu structure (list_pdu) with type 'O' to indicate a request for a content list.
+
+    // sends 'O' type pdu to server
+    write(s, &list_pdu, 101);
+
+    receive_pdu.type = NULL;
+    printf("\nPeer Name || Content Name || Number of Downloads\n\n");
+    while (receive_pdu.type != 'A' && (k = read(s, &receive_pdu, sizeof(receive_pdu)))) { //Enters a loop to receive content information from the server until an acknowledgment pdu with type 'A' is received.
+        if (receive_pdu.type == 'A') break;
+
+        char nodePeerName[MAX_STRING_LENGTH];
+        char nodeContentName[MAX_STRING_LENGTH];
+        char nodeNumDownloads[MAX_STRING_LENGTH];
+        for (x = 0; x < MAX_STRING_LENGTH; x++) { //For each received pdu, extracts the peer name, content name, and number of downloads from the pdu's data field.
+            nodePeerName[x] = receive_pdu.data[x];
+            nodeContentName[x] = receive_pdu.data[x + 10];
+            nodeNumDownloads[x] = receive_pdu.data[x + 20];
+        }
+
+        // print content nodes
+        printf("%d. %s  ||  %s  ||  %s\n", l, nodePeerName, nodeContentName, nodeNumDownloads); //Prints the content information in a formatted manner.
+        l++;
+    }
+    printf("\n-----------------\n\n");
+}
+
+// De-register file
+int deregisterFile(int s) { //The deregisterFile function is responsible for deregistering a file with the server. 
+    struct pdu deregister_pdu;
+    struct pdu receive_pdu;
+    int k = 0;
+
+    printf("\n\nEnter file name below: \n"); //Prompts the user to enter the name of the file they want to deregister.
+    k = read(0, fileName, MAX_STRING_LENGTH); //Reads the user input and stores it in the fileName variable.
+    fileName[k - 1] = '\0';
+
+    deregister_pdu.type = 'T'; //Creates a pdu structure (deregister_pdu) with type 'T' to indicate a file deregistration request.
+    for (j = 0; j < MAX_STRING_LENGTH; j++) {
+        deregister_pdu.data[j] = peerName[j]; //Populates the data field of the pdu with the peer name and file name.
+        deregister_pdu.data[j + 10] = fileName[j];
+    }
+
+    receive_pdu.type = NULL;
+    k = 0;
+    while (receive_pdu.type != 'A' && (write(s, &deregister_pdu, 101) > 0) && (k = read(s, &receive_pdu, sizeof(receive_pdu)))) { //Enters a loop to send the deregistration pdu to the server and wait for a response.
+        if (receive_pdu.type == 'E') { 
+            printf("Error, file name does not exist\n"); //If the server responds with an error pdu (receive_pdu.type == 'E'), it prints an error message and returns 1.
+            return 1;
+        } else { //If the server responds with an acknowledgment pdu (receive_pdu.type == 'A'), the loop exits.
+            // wait for reply
+            printf("File successfully deleted\n"); If the server responds with any other pdu, it assumes the file was successfully deleted and prints a success message before returning 0.
+            return 0;
+        }
+    }
+}
+
+// deregister all content from this peer and
+int exitPeer(int s) {
+    struct pdu deregister_pdu;
+
+    char userInputQuit[MAX_STRING_LENGTH];
+    int k = 0;
+
+    printf("\n\nAre you sure you want to quit? This will deregister all your files in the network (Y/N): \n"); //Asks the user for confirmation to quit, warning that this action will deregister all files from the network.
+    k = read(0, userInputQuit, MAX_STRING_LENGTH); //Reads the user's input ('Y' or 'N') and stores it in userInputQuit.
+    userInputQuit[k - 1] = '\0';
+
+    if (userInputQuit[0] == 'N' || userInputQuit[0] == 'n') { //If the user chooses not to quit ('N' or 'n'), the function returns 1, indicating that the peer should not exit.
+        return 1;
+    }
+
+    deregister_pdu.type = 'T'; //If the user confirms the exit, constructs a pdu structure (deregister_pdu) with type 'T' to indicate a file deregistration request.
+    for (j = 0; j < MAX_STRING_LENGTH; j++) {
+        deregister_pdu.data[j] = peerName[j];
+    }
+    deregister_pdu.data[10] = '*'; //Populates the data field of the pdu with the peer name and a special character '*' to indicate deregistration of all files.
+    deregister_pdu.data[11] = '\0';
+
+    write(s, &deregister_pdu, 101); //Sends the deregistration pdu to the server to deregister all files.
+    return 0;
+}
+
+int downloadContent(int s) {
+    struct pdu receive_pdu;
+    struct pdu download_pdu;
+    char downloadPeerName[MAX_STRING_LENGTH];
+    char downloadContentName[MAX_STRING_LENGTH];
+
+    char address[MAX_STRING_LENGTH];
+    char port[MAX_STRING_LENGTH];
+    char *host = (char *)malloc(MAX_STRING_LENGTH);
+    int portNum;
+
+    int sd;
+    struct hostent *hp;
+    struct sockaddr_in server;
+
+    int k = 0;
+    int l = 1;
+    int x = 0;
+
+    // create the PDU sent to the index server to register file
+    download_pdu.type = 'S';
+
+    printf("\n\nEnter peer name below: \n");
+    k = read(0, downloadPeerName, MAX_STRING_LENGTH);
+    downloadPeerName[k - 1] = '\0';
+
+    printf("\n\nEnter file name below: \n"); //Asks the user to input the peer name and file name they want to download.
+    k = read(0, downloadContentName, MAX_STRING_LENGTH);
+    downloadContentName[k - 1] = '\0'; //Reads and stores the user input in downloadPeerName and downloadContentName respectively
+
+    // sends 'S' type pdu to server //Constructs a pdu structure (download_pdu) with type 'S' to indicate a download request.
+    for (j = 0; j < MAX_STRING_LENGTH; j++) {
+        download_pdu.data[j] = downloadPeerName[j];
+        download_pdu.data[j + 10] = downloadContentName[j]; //Populates the data field of the pdu with the peer name and file name.
+    }
+
+    receive_pdu.type = NULL;
+    k = 0;
+    while (receive_pdu.type != 'S' && (write(s, &download_pdu, 101) > 0) && (k = read(s, &receive_pdu, sizeof(receive_pdu)))) { //Sends the download pdu to the server to initiate the download request.
+        if (receive_pdu.type == 'E') { //Waits for a response from the server. If the response type is 'E', it indicates an error, and the function returns 1.
+            printf("Error, file and/or peer does not exist\n");
+            return 1;
+        }
+        break;
+    }
+
+    /* Create a stream socket	*/
+    if ((sd = socket(AF_INET, SOCK_STREAM, 0)) == -1) { //Creates a TCP socket (SOCK_STREAM) using the socket system call.
+        fprintf(stderr, "Can't creat a socket\n");
+        exit(1);
+    }
+
+    // parses out peer/content name
+    for (j = 0; j < MAX_STRING_LENGTH; j++) { //Extracts the address and port information from the received PDU (receive_pdu).
+        address[j] = receive_pdu.data[j];
+        port[j] = receive_pdu.data[j + 10];
+    }
+    strcpy(host, address); //Copies the extracted address to the host variable and converts the port string to an integer (portNum) using atoi.
+    portNum = atoi(port);
+
+    // format the sockaddr_in struct
+    bzero((char *)&server, sizeof(struct sockaddr_in)); //Initializes a struct sockaddr_in named server and sets its attributes such as family, port, and address.
+    server.sin_family = AF_INET;
+    server.sin_port = htons(portNum);
+    server.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (hp = gethostbyname(host)) //Uses gethostbyname to obtain the host information if the host name is provided.
+        bcopy(hp->h_addr, (char *)&server.sin_addr, hp->h_length); //If gethostbyname fails, it checks if the host is in dotted-decimal format using inet_aton.
+    else if (inet_aton(host, (struct in_addr *)&server.sin_addr)) {
+        fprintf(stderr, "Can't get server's address\n"); //If both methods fail, it prints an error message and returns 1.
+        return 1;
+    }
+
+    printf("\nStarting download..........\n\n"); //Prints information about the download, including the peer's address, port, and the port number.
+    printf("address: %s, port: %s, portNum: %d\n", host, port, portNum);
+
+    /* Connecting to the server */
+    if (connect(sd, (struct sockaddr *)&server, sizeof(server)) == -1) {
+        fprintf(stderr, "Can't connect \n"); //Attempts to establish a connection to the peer using the connect system call.
+        return 1;
+    }
+
+    // send download request pdu
+    struct dpdu recv_pdu; //Initializes a struct dpdu named recv_pdu to receive data from the peer.
+    FILE *fp;
+
+    // create file
+    fp = fopen(downloadContentName, "w"); //Opens a file (fp) in write mode to store the downloaded content.
+    if (fp == NULL) {
+        fprintf(stderr, "error opening file to create\n");
+        return 1;
+    }
+
+    while ((k = read(sd, &recv_pdu, sizeof(recv_pdu))) > 0) { //Enters a loop to continuously read data from the socket (sd) into the recv_pdu.
+        x = 0;
+
+        while (x < 1000) { //It then iterates over the received data and writes it to the file character by character until it encounters an EOF marker or reads up to 1000 characters.
+            if (recv_pdu.data[x] == EOF)
+                break;
+            fputc(recv_pdu.data[x], fp); //The loop continues until there is no more data to read (read returns 0) or an error occurs
+            x++;
+        }
+    }
+
+    fclose(fp); //Closes the file after the download is complete.
+
+    printf("registering downloaded file now \n");
+
+    // register the file
+    registerFile(s, downloadContentName);
+}
+
+/*	reaper		*/
+void reaper(int sig) {
+    int status;
+    while (wait3(&status, WNOHANG, (struct rusage *)0) >= 0) //kill child
+        ;
+}
